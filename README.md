@@ -1,1 +1,1 @@
-# GloCaRe-MedSeg
+# GloCaRe
