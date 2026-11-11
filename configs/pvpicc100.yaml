@@ -1,0 +1,32 @@
+# arguments for dataset
+dataset: pvpicc100
+nclass: 2
+crop_size: 252
+data_root: /media/lee/data/lee/0_Public_Datasets/data4ssl/PVP_ICC100/ 
+
+# arguments for training
+epochs: 60
+batch_size: 12 # per GPU x 1 GPU
+lr: 0.000005
+lr_multi: 40.0
+conf_thresh: 0.95
+criterion:
+  name: CELoss
+  kwargs:
+
+# arguments for model
+model: dpt
+backbone: dinov2_base
+lock_backbone: False
+
+
+flag_level: image 
+
+ablation_ind_x: True
+ablation_ind_u_w: False
+ablation_ind_u_s: False
+lambda_ind: 0.01
+
+warmup_epoch: 6   # 10% of epochs
+
+apply_reweighting: False
