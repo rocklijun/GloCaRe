@@ -35,37 +35,22 @@ from utils_calc_metrics import evaluate_medical_v2_visualization
 
 
 from ops.config import parser
-parser.add_argument('--data-root', type=str, default='', help='Override the dataset root in the config.')
-
 def main():
     args = parser.parse_args()
 
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
-    if args.data_root:
-        cfg['data_root'] = args.data_root
-    if not args.checkpoint:
-        raise ValueError('--checkpoint is required for testing.')
-    if args.mode not in ('test', 'val', 'valtest'):
-        raise ValueError('--mode must be test, val, or valtest.')
 
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    use_distributed = 'SLURM_JOB_ID' in os.environ or int(os.environ.get('WORLD_SIZE', '1')) > 1
-    if use_distributed:
-        rank, world_size = setup_distributed(port=args.port)
-        local_rank = int(os.environ['LOCAL_RANK'])
-    else:
-        if not torch.cuda.is_available():
-            raise RuntimeError('CUDA GPU is required for evaluation.')
-        rank, world_size, local_rank = 0, 1, 0
-        torch.cuda.set_device(local_rank)
-        logger.info('Standalone single-GPU evaluation; distributed initialization skipped.')
+    rank, world_size = setup_distributed(port=args.port)
 
     if rank == 0:
         all_args = {**cfg, **vars(args), 'ngpus': world_size}
         logger.info('{}\n'.format(pprint.pformat(all_args)))
 
+        # writer = SummaryWriter(args.save_path)
+        # os.makedirs(args.save_path, exist_ok=True)
 
     cudnn.enabled = True
     cudnn.benchmark = True
@@ -89,29 +74,23 @@ def main():
         logger.info('Encoder params: {:.1f}M'.format(count_params(model.backbone)))
         logger.info('Decoder params: {:.1f}M\n'.format(count_params(model.head)))
 
-    if not os.path.isfile(args.checkpoint):
-        raise FileNotFoundError('No checkpoint found: {}'.format(args.checkpoint))
-    try:
-        checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-    except TypeError:
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
-    state_dict = checkpoint['model']
-    if state_dict and all(key.startswith('module.') for key in state_dict):
-        state_dict = {key[len('module.'):]: value for key, value in state_dict.items()}
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    allowed_missing = (
-        {key for key in model.state_dict() if key.startswith('roi_attention.')}
-        if cfg.get('flag_level', 'image') == 'image' else set()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model.cuda()
+
+    model = torch.nn.parallel.DistributedDataParallel(
+        model, device_ids=[local_rank], broadcast_buffers=False, output_device=local_rank, find_unused_parameters=True
     )
 
-    if use_distributed:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = model.cuda(local_rank)
-    if use_distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[local_rank], broadcast_buffers=False, output_device=local_rank, find_unused_parameters=True
-        )
-    model.eval()
+    # Load checkpoint
+    if os.path.exists(args.checkpoint):
+        checkpoint = torch.load(args.checkpoint)
+        missing, unexpected = model.load_state_dict(checkpoint['model'], strict=False)
+        epoch = checkpoint['epoch']
+        previous_best = checkpoint['previous_best']
+
+    else:
+        raise ValueError("No checkpoint found")
 
     # Dataset and DataLoader
     # 1. 建立映射关系
@@ -119,7 +98,7 @@ def main():
         "acdc": ACDCDataset,
         "kvasir": KvasirDataset,
         "cvc": KvasirDataset,
-        "pvpicc100": ACDCDataset,
+        "synapse": ACDCDataset,
         # ……
     }
 
@@ -133,9 +112,7 @@ def main():
     # 3. 创建数据集实例
     mode = args.mode
     testset = DatasetClass(cfg['dataset'], cfg['data_root'], mode)
-    testsampler = torch.utils.data.distributed.DistributedSampler(
-        testset, num_replicas=world_size, rank=rank, shuffle=False
-    ) if use_distributed else None
+    testsampler = torch.utils.data.distributed.DistributedSampler(testset)
     testloader = DataLoader(testset, batch_size=1, pin_memory=True, num_workers=1, drop_last=False, sampler=testsampler)
 
     eval_outputs = evaluate_medical_v2_visualization(
