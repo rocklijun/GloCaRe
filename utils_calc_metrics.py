@@ -27,28 +27,10 @@ def _safe_divide(numerator, denominator, default=0.0):
 
 
 def _is_2d_dataset(cfg):
-    """
-    判断是否为常规 2D 数据集。
-
-    你的原始代码中，kvasir/cvc/polyp 按常规 batch 处理；
-    其他数据集会执行 img_input.permute(1, 0, 2, 3)，通常表示把 3D volume
-    的 slice 维度当作 batch 输入模型。
-    """
     return cfg.get("dataset", "").lower() in ["kvasir", "cvc", "polyp"]
 
 
 def _align_pred_and_gt_arrays(pred, gt):
-    """
-    对齐 pred 与 gt 的维度。
-
-    主要解决以下常见情况：
-    1. pred: (D, H, W), gt: (1, D, H, W)
-       这是你当前报错的来源。
-    2. pred: (B, H, W), gt: (B, 1, H, W)
-       这是 2D segmentation 中 label 带 channel 维的常见情况。
-    3. pred: (H, W), gt: (1, H, W)
-       单张 2D 图像评估时的常见情况。
-    """
     pred = np.asarray(pred)
     gt = np.asarray(gt)
 
@@ -83,12 +65,6 @@ def _align_pred_and_gt_arrays(pred, gt):
 
 
 def _align_pred_and_gt_tensors(pred_mask, mask):
-    """
-    对齐 torch Tensor 形式的 pred_mask 和 mask。
-
-    返回:
-        pred_mask, mask，二者 shape 完全一致。
-    """
     if pred_mask.shape == mask.shape:
         return pred_mask, mask
 
@@ -122,15 +98,6 @@ def _align_pred_and_gt_tensors(pred_mask, mask):
 
 
 def _iter_cases_for_surface_metrics(pred_np, mask_np, cfg):
-    """
-    为 HD95 / ASD 提供逐 case 数据。
-
-    关键修复点：
-    - 2D 数据集：pred/mask 通常是 (B,H,W)，逐张图像计算 2D surface metric。
-    - 3D 数据集：你的原始流程中 pred 通常是 (D,H,W)，mask 原始可能是 (1,D,H,W)；
-      对齐后应把整个 (D,H,W) 当作一个 volume 计算 3D HD95/ASD，
-      而不是把 pred_np[b] 切成 (H,W) 后与 mask_np[b] 的 (D,H,W) 比较。
-    """
     pred_np, mask_np = _align_pred_and_gt_arrays(pred_np, mask_np)
 
     if _is_2d_dataset(cfg):
@@ -158,17 +125,6 @@ def _iter_cases_for_surface_metrics(pred_np, mask_np, cfg):
 
 
 def _surface_distances(pred, gt, spacing=None, connectivity=1):
-    """
-    计算 pred 和 gt 之间的双向 surface distance.
-
-    pred, gt:
-        numpy bool array，shape 可以是 2D 或 3D。
-
-    spacing:
-        像素/体素间距，例如：
-        - 2D: (1.0, 1.0)
-        - 3D: (1.0, 1.0, 1.0)
-    """
     pred, gt = _align_pred_and_gt_arrays(pred, gt)
 
     pred = pred.astype(bool)
@@ -215,11 +171,6 @@ def _surface_distances(pred, gt, spacing=None, connectivity=1):
 
 
 def _compute_hd95_asd(pred, gt, spacing=None):
-    """
-    返回单个类别的 HD95 和 ASD.
-
-    如果 pred 或 gt 单侧为空，返回 (nan, nan)。
-    """
     surface_distances = _surface_distances(pred, gt, spacing=spacing)
 
     if surface_distances is None:
@@ -232,16 +183,6 @@ def _compute_hd95_asd(pred, gt, spacing=None):
 
 
 def _prepare_spacing(cfg, ndim):
-    """
-    从 cfg 中读取 spacing。
-
-    2D 默认 (1.0, 1.0)
-    3D 默认 (1.0, 1.0, 1.0)
-
-    注意：
-    如果你的 3D 数据存在真实物理间距，例如 ACDC 的 spacing，
-    建议在 cfg 中显式设置 cfg["spacing"]，否则 HD95/ASD 的单位就是 voxel/pixel。
-    """
     spacing = cfg.get("spacing", None)
 
     if spacing is None:
@@ -270,11 +211,6 @@ def evaluate_medical_v2_visualization(
 ):
     """
     医学图像分割评估函数，支持 Dice / Jaccard / HD95 / ASD。
-
-    相比原版本，本版本重点修复：
-    1. pred=(D,H,W), label=(1,D,H,W) 时的 shape mismatch。
-    2. 非 2D 数据集的 HD95/ASD 按完整 3D volume 计算，而不是错误地逐 slice 计算。
-    3. Dice/Jaccard 计算前统一对齐 pred_mask 与 mask 的维度，避免隐式 broadcasting。
     """
 
     model.eval()
@@ -341,10 +277,8 @@ def evaluate_medical_v2_visualization(
 
             pred_mask = pred_logits.argmax(dim=1).long()
 
-            # 核心修复：显式对齐 pred_mask 与 mask，避免 (D,H,W) vs (1,D,H,W)
             pred_eval, mask_eval = _align_pred_and_gt_tensors(pred_mask, mask)
 
-            # Dice / Jaccard 全局累计
             for idx, cls in enumerate(class_ids):
                 pred_cls = pred_eval == cls
                 gt_cls = mask_eval == cls
@@ -357,7 +291,6 @@ def evaluate_medical_v2_visualization(
                 total_pred[idx] += pred_area
                 total_gt[idx] += gt_area
 
-            # HD95 / ASD 逐 case-class 计算
             need_surface_metric = ("hd95" in metrics) or ("asd" in metrics)
 
             if need_surface_metric:
@@ -385,7 +318,6 @@ def evaluate_medical_v2_visualization(
                             asd_sum[idx] += asd
                             asd_count[idx] += 1
 
-            # 可视化
             if need_save:
                 is_3d_data = (
                     pred_eval.ndim == 3 and not _is_2d_dataset(cfg)
@@ -404,7 +336,6 @@ def evaluate_medical_v2_visualization(
                     label_itk = sitk.GetImageFromArray(mask_cpu.astype(np.float32))
                     pred_itk = sitk.GetImageFromArray(pred_cpu.astype(np.float32))
 
-                    # 如果有 spacing，写入 spacing；SimpleITK 需要 x,y,z 顺序，这里做一次反转
                     spacing = _prepare_spacing(cfg, pred_cpu.ndim)
                     if len(spacing) == 3:
                         sitk_spacing = tuple(reversed(spacing))
@@ -431,7 +362,6 @@ def evaluate_medical_v2_visualization(
                 else:
                     img_save = unnormalize(img_cpu)
 
-                    # 2D 可视化只保存 batch 中第一张
                     if mask_cpu.ndim == 3:
                         mask_show = mask_cpu[0]
                     else:
@@ -459,7 +389,6 @@ def evaluate_medical_v2_visualization(
                         os.path.join(save_vis_dir, f"{case_id}_pred.png")
                     )
 
-    # 分布式汇总
     if _is_dist_avail_and_initialized():
         dist.all_reduce(total_inter, op=dist.ReduceOp.SUM)
         dist.all_reduce(total_pred, op=dist.ReduceOp.SUM)
@@ -471,7 +400,6 @@ def evaluate_medical_v2_visualization(
         dist.all_reduce(asd_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(asd_count, op=dist.ReduceOp.SUM)
 
-    # 汇总 Dice / Jaccard
     dice_class = []
     jaccard_class = []
 
@@ -498,7 +426,6 @@ def evaluate_medical_v2_visualization(
     mean_dice = float(np.mean(dice_class)) if len(dice_class) > 0 else 0.0
     mean_jaccard = float(np.mean(jaccard_class)) if len(jaccard_class) > 0 else 0.0
 
-    # 汇总 HD95 / ASD
     hd95_class = []
     asd_class = []
 
