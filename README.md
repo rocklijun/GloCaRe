@@ -2,9 +2,9 @@
 
 # GloCaRe
 
-### Causality-Inspired Global Decorrelation for Semi-Supervised Medical Image Segmentation
+### Global Causality-Inspired Reweighting for Semi-Supervised Medical Image Segmentation
 
-**A DINOv2-based semi-supervised segmentation framework with global decorrelation-guided reweighting**
+**A DINOv2-based semi-supervised segmentation framework**
 
 [![PyTorch](https://img.shields.io/badge/Framework-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![DINOv2](https://img.shields.io/badge/Backbone-DINOv2-blue)](https://github.com/facebookresearch/dinov2)
